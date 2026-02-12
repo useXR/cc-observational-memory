@@ -1,0 +1,19 @@
+{
+  "name": "cc-observational-memory",
+  "version": "1.0.0",
+  "description": "Observational memory for Claude Code - cross-session context via hooks",
+  "scripts": {
+    "install-hooks": "node scripts/install.js",
+    "uninstall-hooks": "node scripts/uninstall.js"
+  },
+  "keywords": [
+    "claude-code",
+    "memory",
+    "hooks",
+    "observational-memory"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
