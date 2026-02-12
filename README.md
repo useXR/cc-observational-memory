@@ -101,10 +101,17 @@ Date: 2026-02-11
   - [P3] (14:31) ESLint config extends @company/base
 - [P1] (15:00) Decided to use PostgreSQL over SQLite for production
   - [P2] (15:00) Rationale: need concurrent writes from multiple services
+- [P1] (15:30) API launch deadline is March 15th. {ref: 2026-03-15}
+- [P2] (15:45) Sprint review moved to next Tuesday. {rel: 2026-02-18 from "next Tuesday"}
 
 Current Task: Implementing database migration system
 Suggested Next: Continue with migration CLI in src/cli/migrate.ts
 ```
+
+Three-date model per observation:
+1. **Observation date** — the `Date:` header (when the Observer ran)
+2. **Referenced date** — `{ref: DATE}` when a specific date is mentioned in content
+3. **Relative date** — `{rel: DATE from "expression"}` when a relative time expression is computed
 
 Priority levels: `[P1]` critical, `[P2]` moderate, `[P3]` informational.
 

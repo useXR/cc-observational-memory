@@ -11,6 +11,18 @@ You are performing a manual observation cycle. Extract observations from your cu
 - GOOD: "User will use new method (replacing old approach)"
 - BAD: "User plans to use the new method"
 
+**TEMPORAL ANCHORING (three-date model):**
+Each observation carries up to three dates:
+1. **Observation date**: The `Date:` header (when the Observer ran) — always present
+2. **Referenced date**: A specific date mentioned in the content — include when stated
+3. **Relative date**: Computed actual date from relative expressions — include when computable
+
+Examples:
+- `(14:30) Deadline is March 15th for the API launch. {ref: 2026-03-15}`
+- `(14:30) User will visit parents this weekend. {rel: Feb 15-16 from "this weekend"}`
+- `(14:30) User prefers TypeScript with strict mode.` (no date reference needed)
+- Do NOT compute dates for vague terms like "recently", "soon", "lately"
+
 **DETAILS TO ALWAYS PRESERVE:**
 - Names, handles, identifiers (@username, file paths, package names)
 - Numbers, counts, measurements
