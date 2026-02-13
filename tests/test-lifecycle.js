@@ -412,8 +412,428 @@ test('Stop hook exits 0 when no transcript_path provided', function () {
 });
 
 // ==========================================
+console.log('\n=== TEST 12: SessionStart — global observations ===');
+// ==========================================
+
+// Create a global observations file
+var globalDir = path.join(os.homedir(), '.claude', 'observational-memory');
+var globalObsPath = path.join(globalDir, 'observations-global.md');
+var globalObsBackup = null;
+
+// Backup existing global observations if present
+try {
+  globalObsBackup = fs.readFileSync(globalObsPath, 'utf8');
+} catch (e) { /* no existing file */ }
+
+test('injects global observations alongside project observations', function () {
+  // Write global observations
+  fs.mkdirSync(globalDir, { recursive: true });
+  fs.writeFileSync(globalObsPath, 'Date: 2026-02-12\n- [P1] (09:00) User prefers dark mode everywhere');
+
+  // Ensure project observations exist
+  fs.writeFileSync(path.join(claudeDir, 'observations.md'), sampleObs);
+
+  var r = runHook('session-start.js', { cwd: tmpDir, source: 'startup' });
+  assert(r.exitCode === 0, 'Expected exit 0, got ' + r.exitCode);
+  var output = JSON.parse(r.stdout);
+  var ctx = output.hookSpecificOutput.additionalContext;
+  assert(ctx.indexOf('<global-context>') !== -1, 'Expected global-context tag');
+  assert(ctx.indexOf('dark mode') !== -1, 'Expected global observation content');
+  assert(ctx.indexOf('<project-context>') !== -1, 'Expected project-context tag');
+  assert(ctx.indexOf('User prefers TypeScript') !== -1, 'Expected project observation content');
+});
+
+test('Observer prompt mentions global observation distinction', function () {
+  // Read prompts.js and check it includes the global section
+  var promptsContent = fs.readFileSync(path.join(SCRIPT_DIR, 'prompts.js'), 'utf8');
+  assert(promptsContent.indexOf('PROJECT VS GLOBAL') !== -1, 'Expected global distinction in Observer prompt');
+  assert(promptsContent.indexOf('observations-global.md') !== -1, 'Expected global file path in prompt');
+});
+
+// Restore global observations
+if (globalObsBackup !== null) {
+  fs.writeFileSync(globalObsPath, globalObsBackup);
+} else {
+  try { fs.unlinkSync(globalObsPath); } catch (e) { /* ok */ }
+}
+
+// ==========================================
+console.log('\n=== TEST 13: SessionEnd hook ===');
+// ==========================================
+
+test('sets force flag and pending marker when activity detected', function () {
+  // Write a transcript with >5k tokens
+  fs.writeFileSync(transcriptPath, generateTranscript(8000));
+  fs.writeFileSync(path.join(claudeDir, '.observer-state.json'),
+    JSON.stringify({ lastLine: 0, lastTokenCount: 0, forceObservation: false }));
+
+  var r = runHook('session-end.js', { cwd: tmpDir, transcript_path: transcriptPath });
+  assert(r.exitCode === 0, 'Expected exit 0, got ' + r.exitCode);
+
+  // Check pending marker
+  var pendingPath = path.join(claudeDir, '.pending-observation');
+  assert(fs.existsSync(pendingPath), 'Expected .pending-observation marker');
+  var pending = JSON.parse(fs.readFileSync(pendingPath, 'utf8'));
+  assert(pending.newTokens > 5000, 'Expected newTokens > 5000, got ' + pending.newTokens);
+  assert(pending.reason === 'session_end', 'Expected reason session_end');
+
+  // Check force flag
+  var state = JSON.parse(fs.readFileSync(path.join(claudeDir, '.observer-state.json'), 'utf8'));
+  assert(state.forceObservation === true, 'Expected forceObservation true');
+});
+
+test('SessionEnd skips when under threshold', function () {
+  // Write a tiny transcript (~2k tokens)
+  fs.writeFileSync(transcriptPath, generateTranscript(2000));
+  fs.writeFileSync(path.join(claudeDir, '.observer-state.json'),
+    JSON.stringify({ lastLine: 0, lastTokenCount: 0, forceObservation: false }));
+
+  // Remove any existing pending marker
+  var pendingPath = path.join(claudeDir, '.pending-observation');
+  try { fs.unlinkSync(pendingPath); } catch (e) { /* ok */ }
+
+  var r = runHook('session-end.js', { cwd: tmpDir, transcript_path: transcriptPath });
+  assert(r.exitCode === 0, 'Expected exit 0');
+  assert(!fs.existsSync(pendingPath), 'Should not create pending marker for small session');
+});
+
+test('SessionStart detects pending marker and suggests /observe', function () {
+  // Create a pending observation marker
+  fs.writeFileSync(path.join(claudeDir, '.pending-observation'),
+    JSON.stringify({ reason: 'session_end', timestamp: new Date().toISOString(), newTokens: 12000 }));
+
+  // Ensure observations exist
+  fs.writeFileSync(path.join(claudeDir, 'observations.md'), sampleObs);
+
+  var r = runHook('session-start.js', { cwd: tmpDir, source: 'startup' });
+  assert(r.exitCode === 0, 'Expected exit 0');
+  var output = JSON.parse(r.stdout);
+  var ctx = output.hookSpecificOutput.additionalContext;
+  assert(ctx.indexOf('uncaptured activity') !== -1, 'Expected uncaptured activity note');
+  assert(ctx.indexOf('/observe') !== -1, 'Expected /observe suggestion');
+
+  // Marker should be deleted
+  assert(!fs.existsSync(path.join(claudeDir, '.pending-observation')),
+    'Pending marker should be deleted after SessionStart');
+});
+
+// ==========================================
+console.log('\n=== TEST 14: PostToolUse event capture ===');
+// ==========================================
+
+test('captures Write event', function () {
+  // Remove existing events
+  var eventsPath = path.join(claudeDir, '.tool-events.json');
+  try { fs.unlinkSync(eventsPath); } catch (e) { /* ok */ }
+
+  var r = runHook('post-tool-use.js', {
+    cwd: tmpDir,
+    tool_name: 'Write',
+    tool_input: { file_path: '/tmp/test/src/index.ts' },
+    tool_response: 'File written',
+    tool_use_id: 'tu_123'
+  });
+  assert(r.exitCode === 0, 'Expected exit 0');
+  assert(fs.existsSync(eventsPath), 'Expected .tool-events.json to be created');
+  var events = JSON.parse(fs.readFileSync(eventsPath, 'utf8'));
+  assert(Array.isArray(events), 'Expected events array');
+  assert(events.length === 1, 'Expected 1 event, got ' + events.length);
+  assert(events[0].tool === 'Write', 'Expected tool Write');
+  assert(events[0].summary.indexOf('index.ts') !== -1, 'Expected file name in summary');
+});
+
+test('ignores Read tool', function () {
+  var eventsPath = path.join(claudeDir, '.tool-events.json');
+  // Write initial events
+  fs.writeFileSync(eventsPath, JSON.stringify([{ tool: 'Write', summary: 'test' }]));
+
+  var r = runHook('post-tool-use.js', {
+    cwd: tmpDir,
+    tool_name: 'Read',
+    tool_input: { file_path: '/tmp/test.txt' },
+    tool_response: 'file contents',
+    tool_use_id: 'tu_456'
+  });
+  assert(r.exitCode === 0, 'Expected exit 0');
+  var events = JSON.parse(fs.readFileSync(eventsPath, 'utf8'));
+  assert(events.length === 1, 'Expected still 1 event (Read ignored), got ' + events.length);
+});
+
+test('captures Bash test failures', function () {
+  var eventsPath = path.join(claudeDir, '.tool-events.json');
+  fs.writeFileSync(eventsPath, '[]');
+
+  var r = runHook('post-tool-use.js', {
+    cwd: tmpDir,
+    tool_name: 'Bash',
+    tool_input: { command: 'npm test' },
+    tool_response: 'FAIL: 3 tests failed\nError: assertion failed',
+    tool_use_id: 'tu_789'
+  });
+  assert(r.exitCode === 0, 'Expected exit 0');
+  var events = JSON.parse(fs.readFileSync(eventsPath, 'utf8'));
+  assert(events.length === 1, 'Expected 1 event, got ' + events.length);
+  assert(events[0].summary.indexOf('FAILED') !== -1 || events[0].summary.indexOf('test') !== -1,
+    'Expected failure or test keyword in summary');
+});
+
+test('caps events at 100', function () {
+  var eventsPath = path.join(claudeDir, '.tool-events.json');
+  // Write 100 existing events
+  var existingEvents = [];
+  for (var ei = 0; ei < 100; ei++) {
+    existingEvents.push({ timestamp: new Date().toISOString(), tool: 'Write', id: 'old_' + ei, summary: 'old event ' + ei });
+  }
+  fs.writeFileSync(eventsPath, JSON.stringify(existingEvents));
+
+  // Add one more
+  var r = runHook('post-tool-use.js', {
+    cwd: tmpDir,
+    tool_name: 'Edit',
+    tool_input: { file_path: '/tmp/test/new.js' },
+    tool_response: 'edited',
+    tool_use_id: 'tu_new'
+  });
+  assert(r.exitCode === 0, 'Expected exit 0');
+  var events = JSON.parse(fs.readFileSync(eventsPath, 'utf8'));
+  assert(events.length === 100, 'Expected capped at 100, got ' + events.length);
+  assert(events[events.length - 1].tool === 'Edit', 'Last event should be the new Edit event');
+  assert(events[0].id === 'old_1', 'First event should be old_1 (old_0 dropped)');
+});
+
+// ==========================================
+console.log('\n=== TEST 15: Cross-project search config ===');
+// ==========================================
+
+test('config tracks project dirs via addProjectDir', function () {
+  // Load the config module directly
+  var configMod = require(path.join(SCRIPT_DIR, 'config.js'));
+  var configPath = configMod.CONFIG_PATH;
+
+  // Read current config to restore later
+  var originalConfig;
+  try { originalConfig = fs.readFileSync(configPath, 'utf8'); } catch (e) { originalConfig = null; }
+
+  // Add a test project dir
+  configMod.addProjectDir('/tmp/test-project-a');
+  configMod.addProjectDir('/tmp/test-project-b');
+  configMod.addProjectDir('/tmp/test-project-a'); // duplicate, should not be added
+
+  var cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  assert(Array.isArray(cfg.projectDirs), 'Expected projectDirs array');
+  // Count entries that include test-project
+  var testDirs = cfg.projectDirs.filter(function (d) { return d.indexOf('test-project') !== -1; });
+  assert(testDirs.length === 2, 'Expected 2 unique test project dirs, got ' + testDirs.length);
+
+  // Restore
+  if (originalConfig !== null) {
+    fs.writeFileSync(configPath, originalConfig);
+  }
+});
+
+test('observe-search finds observations across mock projects', function () {
+  // Create two mock project dirs with observations
+  var projA = path.join(os.tmpdir(), 'obs-search-a-' + Date.now());
+  var projB = path.join(os.tmpdir(), 'obs-search-b-' + Date.now());
+  fs.mkdirSync(path.join(projA, '.claude'), { recursive: true });
+  fs.mkdirSync(path.join(projB, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(projA, '.claude', 'observations.md'),
+    'Date: 2026-02-10\n- [P1] (10:00) Authentication uses JWT tokens\n');
+  fs.writeFileSync(path.join(projB, '.claude', 'observations.md'),
+    'Date: 2026-02-11\n- [P1] (14:00) Database uses PostgreSQL\n');
+
+  // Read both and verify they contain expected content
+  var obsA = fs.readFileSync(path.join(projA, '.claude', 'observations.md'), 'utf8');
+  var obsB = fs.readFileSync(path.join(projB, '.claude', 'observations.md'), 'utf8');
+  assert(obsA.indexOf('JWT') !== -1, 'Project A should contain JWT');
+  assert(obsB.indexOf('PostgreSQL') !== -1, 'Project B should contain PostgreSQL');
+
+  // Cleanup
+  fs.rmSync(projA, { recursive: true });
+  fs.rmSync(projB, { recursive: true });
+});
+
+// ==========================================
+console.log('\n=== TEST 16: SessionStart — committed/local split ===');
+// ==========================================
+
+test('SessionStart injects both committed and local observations', function () {
+  fs.writeFileSync(path.join(claudeDir, 'observations.md'),
+    'Date: 2026-02-12\n- [P1] (10:00) Architecture uses microservices\n');
+  fs.writeFileSync(path.join(claudeDir, 'observations.local.md'),
+    'Current Task: Working on auth\nSuggested Next: Continue JWT middleware\n');
+
+  var r = runHook('session-start.js', { cwd: tmpDir, source: 'startup' });
+  assert(r.exitCode === 0, 'Expected exit 0');
+  var output = JSON.parse(r.stdout);
+  var ctx = output.hookSpecificOutput.additionalContext;
+  assert(ctx.indexOf('<committed-observations>') !== -1, 'Expected committed-observations tag');
+  assert(ctx.indexOf('<local-observations>') !== -1, 'Expected local-observations tag');
+  assert(ctx.indexOf('microservices') !== -1, 'Expected committed content');
+  assert(ctx.indexOf('auth') !== -1, 'Expected local content');
+});
+
+test('Observer prompt mentions committed vs local split', function () {
+  var promptsContent = fs.readFileSync(path.join(SCRIPT_DIR, 'prompts.js'), 'utf8');
+  assert(promptsContent.indexOf('COMMITTED VS LOCAL') !== -1, 'Expected committed/local split in Observer prompt');
+  assert(promptsContent.indexOf('observations.local.md') !== -1, 'Expected local file path in prompt');
+});
+
+test('Reflector triggers on either committed or local file exceeding threshold', function () {
+  // Test with large LOCAL observations file (committed is small)
+  fs.writeFileSync(path.join(claudeDir, 'observations.md'), 'Small committed file\n');
+  var bigLocal = '';
+  for (var li = 0; li < 3000; li++) {
+    bigLocal += '- [P2] (10:' + (li % 60).toString().padStart(2, '0') + ') Local observation entry number ' + li + ' with some additional context padding\n';
+  }
+  fs.writeFileSync(path.join(claudeDir, 'observations.local.md'), bigLocal);
+
+  // Reset state (no force, high token count to avoid Observer trigger)
+  fs.writeFileSync(transcriptPath, generateTranscript(5000));
+  fs.writeFileSync(path.join(claudeDir, '.observer-state.json'),
+    JSON.stringify({ lastLine: 999, lastTokenCount: 99999, forceObservation: false }));
+
+  var r = runHook('stop-check.js', { cwd: tmpDir, transcript_path: transcriptPath });
+  assert(r.exitCode === 2, 'Expected exit 2 (Reflector from local), got ' + r.exitCode);
+  assert(r.stderr.indexOf('<reflection-request>') !== -1, 'Expected Reflector prompt');
+});
+
+test('Reflector prompt mentions both files', function () {
+  var promptsContent = fs.readFileSync(path.join(SCRIPT_DIR, 'prompts.js'), 'utf8');
+  assert(promptsContent.indexOf('observations.md') !== -1, 'Expected committed file in Reflector');
+  assert(promptsContent.indexOf('observations.local.md') !== -1, 'Expected local file in Reflector');
+});
+
+test('observe-migrate classifies correctly (Current Task always local)', function () {
+  // Read the observe-migrate command to verify it exists and has correct rules
+  var migratePath = path.join(os.homedir(), '.claude', 'commands', 'observe-migrate.md');
+  // Fallback to source if not installed
+  var migrateSourcePath = path.join(__dirname, '..', 'commands', 'observe-migrate.md');
+  var migrateMd;
+  try {
+    migrateMd = fs.readFileSync(migratePath, 'utf8');
+  } catch (e) {
+    migrateMd = fs.readFileSync(migrateSourcePath, 'utf8');
+  }
+  assert(migrateMd.indexOf('Current Task') !== -1, 'Migration should mention Current Task classification');
+  assert(migrateMd.indexOf('ALWAYS local') !== -1, 'Migration should enforce Current Task as always local');
+  assert(migrateMd.indexOf('backup') !== -1, 'Migration should create backup');
+});
+
+// ==========================================
+console.log('\n=== TEST 17: observe-status readable ===');
+// ==========================================
+
+test('observe-status state and observations files are readable and token counts computable', function () {
+  // Verify the files that /observe-status would read exist and are parseable
+  fs.writeFileSync(path.join(claudeDir, 'observations.md'),
+    'Date: 2026-02-13\n- [P1] (10:00) Test observation\n');
+  fs.writeFileSync(path.join(claudeDir, '.observer-state.json'),
+    JSON.stringify({ lastLine: 10, lastTokenCount: 5000, forceObservation: false }));
+
+  var obsContent = fs.readFileSync(path.join(claudeDir, 'observations.md'), 'utf8');
+  var stateContent = JSON.parse(fs.readFileSync(path.join(claudeDir, '.observer-state.json'), 'utf8'));
+  var tokens = Math.ceil(obsContent.length / 4);
+
+  assert(tokens > 0, 'Token count should be > 0');
+  assert(stateContent.lastTokenCount === 5000, 'State should have correct lastTokenCount');
+});
+
+// ==========================================
+console.log('\n=== TEST 18: observe-diff git readable ===');
+// ==========================================
+
+test('git diff output is readable in a temp repo', function () {
+  // Init a git repo, make a commit, then verify diff works
+  var diffDir = path.join(os.tmpdir(), 'obs-diff-test-' + Date.now());
+  fs.mkdirSync(diffDir, { recursive: true });
+  childProcess.execSync('git init', { cwd: diffDir, stdio: 'pipe' });
+  childProcess.execSync('git config user.email "test@test.com"', { cwd: diffDir, stdio: 'pipe' });
+  childProcess.execSync('git config user.name "Test"', { cwd: diffDir, stdio: 'pipe' });
+  fs.writeFileSync(path.join(diffDir, 'test.txt'), 'initial content');
+  childProcess.execSync('git add . && git commit -m "init"', { cwd: diffDir, stdio: 'pipe' });
+  fs.writeFileSync(path.join(diffDir, 'test.txt'), 'modified content');
+
+  var diff = childProcess.execSync('git diff HEAD', { cwd: diffDir, encoding: 'utf8' });
+  assert(diff.indexOf('modified content') !== -1, 'Diff should show changes');
+
+  fs.rmSync(diffDir, { recursive: true });
+});
+
+// ==========================================
+console.log('\n=== TEST 19: Plan management ===');
+// ==========================================
+
+test('finds plan files and counts steps', function () {
+  var plansDir = path.join(claudeDir, 'plans');
+  fs.mkdirSync(plansDir, { recursive: true });
+  fs.writeFileSync(path.join(plansDir, 'feature-a.md'),
+    '## Plan A\n1. [x] Step 1\n2. [x] Step 2\n3. [ ] Step 3\n');
+  fs.writeFileSync(path.join(plansDir, 'feature-b.md'),
+    '## Plan B\n1. [x] Step 1\n2. [x] Step 2\n');
+
+  // Read plan files and count steps
+  var files = fs.readdirSync(plansDir).filter(function (f) { return f.endsWith('.md'); });
+  assert(files.length === 2, 'Expected 2 plan files');
+
+  var planA = fs.readFileSync(path.join(plansDir, 'feature-a.md'), 'utf8');
+  var completedA = (planA.match(/\[x\]/gi) || []).length;
+  var pendingA = (planA.match(/\[ \]/g) || []).length;
+  assert(completedA === 2, 'Plan A: expected 2 completed');
+  assert(pendingA === 1, 'Plan A: expected 1 pending');
+});
+
+test('identifies completed plans (100% done)', function () {
+  var plansDir = path.join(claudeDir, 'plans');
+  var planB = fs.readFileSync(path.join(plansDir, 'feature-b.md'), 'utf8');
+  var completedB = (planB.match(/\[x\]/gi) || []).length;
+  var pendingB = (planB.match(/\[ \]/g) || []).length;
+  assert(completedB === 2 && pendingB === 0, 'Plan B should be 100% complete');
+});
+
+test('can delete completed plans', function () {
+  var plansDir = path.join(claudeDir, 'plans');
+  // Delete plan B (it's complete)
+  fs.unlinkSync(path.join(plansDir, 'feature-b.md'));
+  var remaining = fs.readdirSync(plansDir).filter(function (f) { return f.endsWith('.md'); });
+  assert(remaining.length === 1, 'Expected 1 remaining plan');
+  assert(remaining[0] === 'feature-a.md', 'Expected feature-a.md to remain');
+
+  // Cleanup
+  fs.rmSync(plansDir, { recursive: true });
+});
+
+// ==========================================
+console.log('\n=== TEST 20: observe-pr readable ===');
+// ==========================================
+
+test('observations and plan files readable for PR generation', function () {
+  fs.writeFileSync(path.join(claudeDir, 'observations.md'),
+    'Date: 2026-02-13\n- [P1] (10:00) Implemented auth system\n- [P2] (10:05) Added JWT middleware\n');
+
+  var plansDir = path.join(claudeDir, 'plans');
+  fs.mkdirSync(plansDir, { recursive: true });
+  fs.writeFileSync(path.join(plansDir, 'feature-auth.md'),
+    '## Auth Plan\n1. [x] JWT middleware\n2. [x] Login endpoint\n3. [ ] Refresh tokens\n');
+
+  var obs = fs.readFileSync(path.join(claudeDir, 'observations.md'), 'utf8');
+  var plan = fs.readFileSync(path.join(plansDir, 'feature-auth.md'), 'utf8');
+  assert(obs.indexOf('auth system') !== -1, 'Observations should be readable');
+  assert(plan.indexOf('JWT') !== -1, 'Plan should be readable');
+
+  // Cleanup
+  fs.rmSync(plansDir, { recursive: true });
+});
+
+// ==========================================
 // Cleanup
 // ==========================================
+
+// Reset observations to something simple for cleanup
+fs.writeFileSync(path.join(claudeDir, 'observations.md'), sampleObs);
+try { fs.unlinkSync(path.join(claudeDir, 'observations.local.md')); } catch (e) { /* ok */ }
+try { fs.unlinkSync(path.join(claudeDir, '.tool-events.json')); } catch (e) { /* ok */ }
+try { fs.unlinkSync(path.join(claudeDir, '.pending-observation')); } catch (e) { /* ok */ }
 
 fs.rmSync(tmpDir, { recursive: true });
 

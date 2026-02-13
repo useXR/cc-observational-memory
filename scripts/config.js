@@ -11,7 +11,8 @@ var DEFAULTS = {
   observationThreshold: 30000,
   reflectionThreshold: 40000,
   contextThresholdPct: 60,
-  enabled: true
+  enabled: true,
+  projectDirs: []
 };
 
 /**
@@ -82,12 +83,39 @@ function readStdin() {
   });
 }
 
+/**
+ * Add a project directory to the tracked projectDirs list.
+ * Deduplicates and normalizes paths.
+ */
+function addProjectDir(projectPath) {
+  var normalized = path.resolve(projectPath).replace(/\\/g, '/');
+  var cfg;
+  try {
+    cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  } catch (e) {
+    cfg = {};
+  }
+  if (!Array.isArray(cfg.projectDirs)) {
+    cfg.projectDirs = [];
+  }
+  // Normalize existing entries for comparison
+  var existing = cfg.projectDirs.map(function (p) { return path.resolve(p).replace(/\\/g, '/'); });
+  if (existing.indexOf(normalized) === -1) {
+    cfg.projectDirs.push(normalized);
+    if (!fs.existsSync(CONFIG_DIR)) {
+      fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    }
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+  }
+}
+
 module.exports = {
   loadConfig: loadConfig,
   isProjectOptedOut: isProjectOptedOut,
   readState: readState,
   writeState: writeState,
   readStdin: readStdin,
+  addProjectDir: addProjectDir,
   CONFIG_DIR: CONFIG_DIR,
   CONFIG_PATH: CONFIG_PATH,
   DEFAULTS: DEFAULTS

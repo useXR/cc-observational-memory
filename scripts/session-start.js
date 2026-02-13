@@ -2,6 +2,8 @@
 
 var config = require('./config');
 var childProcess = require('child_process');
+var fs = require('fs');
+var path = require('path');
 
 function getCurrentBranch(cwd) {
   try {
@@ -11,6 +13,14 @@ function getCurrentBranch(cwd) {
       timeout: 3000,
       stdio: ['pipe', 'pipe', 'pipe']
     }).trim();
+  } catch (e) {
+    return '';
+  }
+}
+
+function readFileSafe(filePath) {
+  try {
+    return fs.readFileSync(filePath, 'utf8').trim();
   } catch (e) {
     return '';
   }
@@ -29,24 +39,16 @@ async function main() {
     process.exit(0);
   }
 
-  var fs = require('fs');
-  var path = require('path');
-  var observationsPath = path.join(cwd, '.claude', 'observations.md');
+  // Auto-register project for cross-project search
+  try { config.addProjectDir(cwd); } catch (e) { /* best-effort */ }
 
-  if (!fs.existsSync(observationsPath)) {
-    process.exit(0);
-  }
+  // Read all observation sources
+  var committedObs = readFileSafe(path.join(cwd, '.claude', 'observations.md'));
+  var localObs = readFileSafe(path.join(cwd, '.claude', 'observations.local.md'));
+  var globalObs = readFileSafe(path.join(config.CONFIG_DIR, 'observations-global.md'));
 
-  var observations;
-  try {
-    observations = fs.readFileSync(observationsPath, 'utf8').trim();
-  } catch (e) {
-    process.exit(0);
-  }
-
-  if (!observations) {
-    process.exit(0);
-  }
+  // Exit if all observation sources are empty (plan check happens below)
+  var hasAnyObs = committedObs || localObs || globalObs;
 
   var source = input.source || 'startup';
   var isContextReset = (source === 'compact' || source === 'clear');
@@ -67,13 +69,32 @@ async function main() {
     ].join(' ');
   }
 
-  var sections = [
-    '<prior-observations>',
-    preamble,
-    '',
-    observations,
-    '</prior-observations>'
-  ];
+  var sections = [];
+
+  // Global observations
+  if (globalObs) {
+    sections.push('<global-context>');
+    sections.push(globalObs);
+    sections.push('</global-context>');
+    sections.push('');
+  }
+
+  // Project observations (committed + local)
+  if (committedObs || localObs) {
+    sections.push('<project-context>');
+    if (committedObs) {
+      sections.push('<committed-observations>');
+      sections.push(committedObs);
+      sections.push('</committed-observations>');
+    }
+    if (localObs) {
+      if (committedObs) sections.push('');
+      sections.push('<local-observations>');
+      sections.push(localObs);
+      sections.push('</local-observations>');
+    }
+    sections.push('</project-context>');
+  }
 
   // Inject active plan if it exists (keyed by branch name)
   var branch = getCurrentBranch(cwd);
@@ -85,9 +106,11 @@ async function main() {
     planPath = path.join(cwd, '.claude', 'plan.md');
   }
 
+  var hasPlan = false;
   try {
     var plan = fs.readFileSync(planPath, 'utf8').trim();
     if (plan) {
+      hasPlan = true;
       sections.push('');
       sections.push('<active-plan branch="' + (branch || 'unknown') + '">');
       sections.push('The following plan was in progress. Continue from where it left off.');
@@ -99,7 +122,36 @@ async function main() {
     // No plan file, that's fine
   }
 
-  var context = sections.join('\n');
+  // Check for pending observation from SessionEnd
+  var pendingPath = path.join(cwd, '.claude', '.pending-observation');
+  try {
+    var pendingRaw = fs.readFileSync(pendingPath, 'utf8');
+    var pending = JSON.parse(pendingRaw);
+    if (pending && pending.newTokens) {
+      sections.push('');
+      sections.push('<system-note>');
+      sections.push('Previous session ended with ~' + pending.newTokens + ' tokens of uncaptured activity. Consider running /observe.');
+      sections.push('</system-note>');
+    }
+    // Delete the marker
+    fs.unlinkSync(pendingPath);
+  } catch (e) {
+    // No pending observation, that's fine
+  }
+
+  // Exit if nothing to inject
+  if (!hasAnyObs && !hasPlan) {
+    process.exit(0);
+  }
+
+  // Wrap everything in prior-observations with preamble
+  var context = [
+    '<prior-observations>',
+    preamble,
+    '',
+    sections.join('\n'),
+    '</prior-observations>'
+  ].join('\n');
 
   var output = {
     hookSpecificOutput: {

@@ -63,6 +63,7 @@ async function main() {
 
   // --- Phase 2: Check if REFLECTION is needed (observations file too large) ---
   var observationsPath = path.join(cwd, '.claude', 'observations.md');
+  var localObsPath = path.join(cwd, '.claude', 'observations.local.md');
   var needsReflection = false;
 
   try {
@@ -73,6 +74,19 @@ async function main() {
     }
   } catch (e) {
     // File doesn't exist or can't be read — no reflection needed
+  }
+
+  // Also trigger reflection if local observations file is large
+  if (!needsReflection) {
+    try {
+      var localContent = fs.readFileSync(localObsPath, 'utf8');
+      var localTokens = transcript.estimateTokens(localContent);
+      if (localTokens >= (cfg.reflectionThreshold || 40000)) {
+        needsReflection = true;
+      }
+    } catch (e) {
+      // No local observations file
+    }
   }
 
   if (needsReflection) {

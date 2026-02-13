@@ -12,8 +12,10 @@ var CONFIG_PATH = path.join(TARGET_DIR, 'config.json');
 
 var SCRIPTS = [
   'session-start.js',
+  'session-end.js',
   'stop-check.js',
   'pre-compact.js',
+  'post-tool-use.js',
   'transcript.js',
   'config.js',
   'prompts.js'
@@ -60,6 +62,20 @@ function getHookConfig() {
         command: 'node "' + scriptDir + '/pre-compact.js"',
         timeout: 5
       }]
+    }],
+    SessionEnd: [{
+      hooks: [{
+        type: 'command',
+        command: 'node "' + scriptDir + '/session-end.js"',
+        timeout: 5
+      }]
+    }],
+    PostToolUse: [{
+      hooks: [{
+        type: 'command',
+        command: 'node "' + scriptDir + '/post-tool-use.js"',
+        timeout: 3
+      }]
     }]
   };
 }
@@ -101,7 +117,12 @@ function installCommands() {
     fs.mkdirSync(COMMANDS_DIR, { recursive: true });
   }
 
-  var commands = ['observe.md', 'observe-init.md', 'worktree-init.md', 'worktree-merge.md'];
+  var commands = [
+    'observe.md', 'observe-init.md', 'observe-status.md', 'observe-diff.md',
+    'observe-pr.md', 'observe-global.md', 'observe-search.md', 'observe-migrate.md',
+    'plan-list.md', 'plan-show.md', 'plan-clear.md',
+    'worktree-init.md', 'worktree-merge.md'
+  ];
   var srcDir = path.join(__dirname, '..', 'commands');
   for (var i = 0; i < commands.length; i++) {
     var src = path.join(srcDir, commands[i]);
@@ -173,11 +194,22 @@ function main() {
   console.log('  - SessionStart: Injects prior observations on startup/resume/compact/clear');
   console.log('  - Stop: Triggers observation extraction when threshold reached');
   console.log('  - PreCompact: Ensures observations before context compaction');
+  console.log('  - SessionEnd: Marks uncaptured activity for next session');
+  console.log('  - PostToolUse: Logs significant tool events');
   console.log('\nSlash commands:');
-  console.log('  - /observe: manually trigger observation before compact/clear');
-  console.log('  - /observe-init: bootstrap observations from git history for existing projects');
-  console.log('  - /worktree-init: copy observations into a new worktree');
-  console.log('  - /worktree-merge: merge worktree observations back to main project');
+  console.log('  - /observe: manually trigger observation');
+  console.log('  - /observe-init: bootstrap observations from git history');
+  console.log('  - /observe-status: show system status and thresholds');
+  console.log('  - /observe-diff: analyze git diff and record observations');
+  console.log('  - /observe-pr: generate PR description from observations');
+  console.log('  - /observe-global: record cross-project observations');
+  console.log('  - /observe-search: search observations across projects');
+  console.log('  - /observe-migrate: split observations into committed/local');
+  console.log('  - /plan-list: list all plans and progress');
+  console.log('  - /plan-show: display a specific plan');
+  console.log('  - /plan-clear: clean up completed plans');
+  console.log('  - /worktree-init: copy observations into a worktree');
+  console.log('  - /worktree-merge: merge worktree observations back');
   console.log('\nPer-project opt-out: create .claude/.no-observations in any project');
   console.log('Global config: ' + CONFIG_PATH);
 }

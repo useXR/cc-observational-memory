@@ -38,9 +38,18 @@ Capture what distinguishes each item:
 - GOOD: "Recommended: Library A (lightweight), Library B (full-featured)"
 - BAD: "Recommended some libraries"
 
+## Output Files
+
+Observations are written to two files based on their nature:
+- **`.claude/observations.md`** (committed): project facts, architecture, conventions, completed work
+- **`.claude/observations.local.md`** (local): session state, WIP, Current Task, Suggested Next
+- **`~/.claude/observational-memory/observations-global.md`** (global): user preferences, cross-project tools
+
+When uncertain, default to local (safer). "Current Task" and "Suggested Next" ALWAYS go to local.
+
 ## Output Format
 
-Append to `.claude/observations.md` using this exact format:
+Append to the appropriate file(s) using this exact format:
 
 ```
 Date: YYYY-MM-DD

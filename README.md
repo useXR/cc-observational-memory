@@ -6,15 +6,19 @@ Zero dependencies. Node.js only. Works on Windows, macOS, and Linux.
 
 ## How It Works
 
-Three hooks implement a two-phase Observer/Reflector pipeline:
+Five hooks implement a two-phase Observer/Reflector pipeline:
 
-1. **SessionStart** (`session-start.js`) — Reads `.claude/observations.md` from the current project and injects it into Claude's context via `additionalContext`. Fires on `startup` and `resume`.
+1. **SessionStart** (`session-start.js`) — Reads observations from three sources (global, committed, local) and the active branch plan, then injects them into Claude's context via `additionalContext`. Also detects pending observations from previous sessions and auto-registers the project for cross-project search.
 
 2. **Stop** (`stop-check.js`) — Fires every time Claude stops. Runs two checks in priority order:
-   - **Observer phase**: Estimates new token count since the last observation. When the threshold is reached (default: 30,000 tokens), exits with code 2 and sends a specialized Observer prompt on stderr. Claude extracts structured observations from its own context and appends them to `.claude/observations.md`.
-   - **Reflector phase**: If no observation is needed, checks the size of `.claude/observations.md`. When it exceeds the reflection threshold (default: 40,000 tokens), exits with code 2 and sends a Reflector prompt. Claude reads the file and consolidates it — combining related items, condensing old entries, dropping superseded context — while preserving all critical information.
+   - **Observer phase**: Estimates new token count since the last observation. When the threshold is reached (default: 30,000 tokens), exits with code 2 and sends a specialized Observer prompt on stderr. Claude extracts structured observations from its own context and writes them to the appropriate files.
+   - **Reflector phase**: If no observation is needed, checks the size of both `.claude/observations.md` and `.claude/observations.local.md`. When either exceeds the reflection threshold (default: 40,000 tokens), exits with code 2 and sends a Reflector prompt. Claude reads both files and consolidates them.
 
 3. **PreCompact** (`pre-compact.js`) — Fires before context compaction. Sets a force flag so the next Stop triggers observation, ensuring context is captured before it's lost.
+
+4. **SessionEnd** (`session-end.js`) — Fires when a session ends. If significant uncaptured activity exists (>5,000 tokens), writes a `.pending-observation` marker and sets the force flag. The next SessionStart will detect this and suggest running `/observe`.
+
+5. **PostToolUse** (`post-tool-use.js`) — Fires after each tool use. Filters for significant tools (Write, Edit, Bash test/build/deploy, TaskCreate, TaskUpdate) and logs events to `.claude/.tool-events.json` (capped at 100). The Observer references this log for session activity.
 
 Claude itself writes the observations — no external API calls, no extra cost beyond normal session usage.
 
@@ -22,17 +26,29 @@ Claude itself writes the observations — no external API calls, no extra cost b
 
 | | Observer | Reflector |
 |---|---|---|
-| **Triggers when** | New transcript content exceeds `observationThreshold` | `observations.md` exceeds `reflectionThreshold` |
-| **Input** | Claude's current session context | Existing `observations.md` file |
-| **Output** | New observations appended to file | Consolidated rewrite of entire file |
+| **Triggers when** | New transcript content exceeds `observationThreshold` | Either observations file exceeds `reflectionThreshold` |
+| **Input** | Claude's current session context + tool event log | Both observation files (committed + local) |
+| **Output** | Observations appended to appropriate files | Consolidated rewrite of both files |
 | **Frequency** | Every ~30k tokens of conversation | After many observation cycles |
 | **Purpose** | Capture facts, decisions, preferences | Condense, combine, drop redundant entries |
+
+### Observation Files
+
+Observations are split across three scopes:
+
+| File | Scope | Contents |
+|------|-------|----------|
+| `.claude/observations.md` | Committed (project) | Architecture, conventions, tech stack, completed work |
+| `.claude/observations.local.md` | Local (gitignored) | Session state, WIP, Current Task, Suggested Next |
+| `~/.claude/observational-memory/observations-global.md` | Global (user) | Preferences, workflows, cross-project tools |
+
+The Observer prompt instructs Claude to classify each observation into the correct file. When uncertain, it defaults to local (safer).
 
 ### Session Continuity
 
 Each observation cycle also records:
-- **Current Task**: What Claude was working on when observation fired
-- **Suggested Next**: A specific hint for continuing in the next session
+- **Current Task**: What Claude was working on when observation fired (always local)
+- **Suggested Next**: A specific hint for continuing in the next session (always local)
 
 These are injected at session start, so Claude immediately knows where to pick up.
 
@@ -46,7 +62,7 @@ node scripts/install.js
 This:
 - Copies scripts to `~/.claude/observational-memory/`
 - Merges hooks into `~/.claude/settings.json` (preserving existing hooks)
-- Installs the `/observe` slash command to `~/.claude/commands/`
+- Installs 13 slash commands to `~/.claude/commands/`
 - Creates a default config at `~/.claude/observational-memory/config.json`
 
 ## Uninstallation
@@ -67,26 +83,48 @@ Global config at `~/.claude/observational-memory/config.json`:
   "observationThreshold": 30000,
   "reflectionThreshold": 40000,
   "contextThresholdPct": 60,
-  "enabled": true
+  "enabled": true,
+  "projectDirs": []
 }
 ```
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `observationThreshold` | 30000 | Estimated new tokens before triggering the Observer (~4 chars/token) |
-| `reflectionThreshold` | 40000 | When observations.md exceeds this, the Reflector consolidates |
-| `contextThresholdPct` | 60 | Trigger observation when context window exceeds this % used (even if content threshold not met) |
+| `reflectionThreshold` | 40000 | When either observations file exceeds this, the Reflector consolidates |
+| `contextThresholdPct` | 60 | Trigger observation when context window exceeds this % used |
 | `enabled` | true | Global kill switch |
+| `projectDirs` | [] | Auto-populated list of projects for cross-project search |
 
 ### Slash Commands
 
-**`/observe`** — Manually trigger an observation cycle. Use before `/compact` or `/clear` to capture observations from the full, uncompacted context. The automatic PreCompact hook also sets a force-observation flag, but the actual extraction happens *after* compaction. `/observe` lets you capture from the complete context first.
+**Observation commands:**
 
-**`/observe-init`** — Bootstrap observations for an existing project by analyzing git commit history and project structure. Run this once in projects that already have development history to give future sessions immediate context about the codebase, stack, architecture, and recent work.
+| Command | Description |
+|---------|-------------|
+| `/observe` | Manually trigger an observation cycle |
+| `/observe-init` | Bootstrap observations from git history for existing projects |
+| `/observe-status` | Show system status: thresholds, token counts, plan progress |
+| `/observe-diff` | Analyze recent git changes and record intent/reasoning observations |
+| `/observe-pr` | Generate a PR description from observations and branch history |
+| `/observe-global` | Record cross-project observations (preferences, workflows, tools) |
+| `/observe-search` | Search observations across all known projects |
+| `/observe-migrate` | Split existing observations into committed/local format |
 
-**`/worktree-init`** — Copy the main project's observations into a new worktree. Run after creating a worktree so the branch session starts with full project context.
+**Plan management:**
 
-**`/worktree-merge`** — Merge observations from the current worktree back into the main project's file. Run before finishing a branch or removing a worktree. Deduplicates, consolidates, and cleans up completed branch plans.
+| Command | Description |
+|---------|-------------|
+| `/plan-list` | List all saved plans and their progress |
+| `/plan-show` | Display a specific branch plan with progress summary |
+| `/plan-clear` | Find and clean up 100%-complete plans |
+
+**Worktree support:**
+
+| Command | Description |
+|---------|-------------|
+| `/worktree-init` | Copy main project's observations into a new worktree |
+| `/worktree-merge` | Merge worktree observations back to main project |
 
 ### Worktree Workflow
 
@@ -108,7 +146,7 @@ touch .claude/.no-observations
 
 ## Observation Format
 
-Observations are stored as plain markdown in `.claude/observations.md`:
+Observations are stored as plain markdown:
 
 ```markdown
 Date: 2026-02-11
@@ -137,34 +175,59 @@ Priority levels: `[P1]` critical, `[P2]` moderate, `[P3]` informational.
 cc-observational-memory/
   scripts/
     session-start.js    # SessionStart hook — injects observations
+    session-end.js      # SessionEnd hook — marks uncaptured activity
     stop-check.js       # Stop hook — Observer/Reflector gatekeeper
     pre-compact.js      # PreCompact hook — force-observation safety net
+    post-tool-use.js    # PostToolUse hook — logs significant tool events
     prompts.js          # Observer and Reflector prompt templates
     transcript.js       # Transcript JSONL parser + token estimator
     config.js           # Configuration, state management, stdin reader
     install.js          # Installer
     uninstall.js        # Uninstaller
   commands/
-    observe.md          # /observe slash command
-    observe-init.md     # /observe-init slash command
-    worktree-init.md    # /worktree-init slash command
-    worktree-merge.md   # /worktree-merge slash command
+    observe.md          # /observe — manual observation trigger
+    observe-init.md     # /observe-init — bootstrap from git history
+    observe-status.md   # /observe-status — system status display
+    observe-diff.md     # /observe-diff — git diff analysis
+    observe-pr.md       # /observe-pr — PR description generator
+    observe-global.md   # /observe-global — cross-project observations
+    observe-search.md   # /observe-search — cross-project search
+    observe-migrate.md  # /observe-migrate — committed/local migration
+    plan-list.md        # /plan-list — list all plans
+    plan-show.md        # /plan-show — display specific plan
+    plan-clear.md       # /plan-clear — clean up completed plans
+    worktree-init.md    # /worktree-init — copy observations to worktree
+    worktree-merge.md   # /worktree-merge — merge worktree back
+  tests/
+    test-lifecycle.js   # 43 lifecycle tests
   package.json
   README.md
 ```
 
 Per-project (created automatically):
-- `.claude/observations.md` — Human-readable observations
+- `.claude/observations.md` — Committed observations (safe to share/commit)
+- `.claude/observations.local.md` — Local observations (session state, gitignored)
 - `.claude/.observer-state.json` — Position tracking (gitignore this)
+- `.claude/.tool-events.json` — Tool event log (gitignore this)
+- `.claude/.pending-observation` — SessionEnd marker (transient, auto-deleted)
+- `.claude/plans/<branch>.md` — Branch-keyed implementation plans
+
+Global (user-level):
+- `~/.claude/observational-memory/config.json` — Global configuration
+- `~/.claude/observational-memory/observations-global.md` — Cross-project observations
 
 ## Design Decisions
 
 - **Two-phase pipeline**: Separate Observer and Reflector prompts (adapted from [Mastra's architecture](https://mastra.ai/research/observational-memory)). Observer extracts, Reflector consolidates — each fires on different stop events.
 - **Node.js only**: Claude Code requires Node.js, so it's guaranteed available. No Python, no bash, no pip.
-- **Zero dependencies**: Uses only Node.js built-ins (`fs`, `path`, `os`). No `npm install` needed.
+- **Zero dependencies**: Uses only Node.js built-ins (`fs`, `path`, `os`, `child_process`). No `npm install` needed.
 - **Claude-as-observer**: Claude extracts observations from its own context. No external API calls.
 - **Token-based thresholds**: Observation triggers based on estimated token count, not line count. A file paste counts proportionally to its size.
-- **Plain markdown**: `.claude/observations.md` is human-readable, editable, and can be committed or gitignored.
+- **Three-scope observations**: Global (user preferences), committed (project facts), local (session state) — each stored separately for appropriate sharing and persistence.
+- **Plain markdown**: All observation files are human-readable, editable, and can be committed or gitignored as needed.
 - **User-level hooks**: Installed once in `~/.claude/settings.json`, works across all projects.
 - **`[P1]`/`[P2]`/`[P3]` priorities**: Text labels instead of emoji to avoid encoding issues in cross-platform stderr.
 - **PreCompact safety net**: Forces observation before context compaction — something Mastra's system doesn't have.
+- **SessionEnd continuity**: Detects uncaptured session activity so the next session can prompt for observation.
+- **Tool event log**: PostToolUse captures significant actions (file writes, test runs, failures) so the Observer has concrete activity data.
+- **Auto-registration**: Projects are automatically added to `projectDirs` on session start, enabling cross-project search without manual setup.

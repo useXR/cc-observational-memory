@@ -68,7 +68,12 @@ function removeScripts() {
 }
 
 function removeCommands() {
-  var commands = ['observe.md', 'observe-init.md', 'worktree-init.md', 'worktree-merge.md'];
+  var commands = [
+    'observe.md', 'observe-init.md', 'observe-status.md', 'observe-diff.md',
+    'observe-pr.md', 'observe-global.md', 'observe-search.md', 'observe-migrate.md',
+    'plan-list.md', 'plan-show.md', 'plan-clear.md',
+    'worktree-init.md', 'worktree-merge.md'
+  ];
   for (var i = 0; i < commands.length; i++) {
     var commandPath = path.join(COMMANDS_DIR, commands[i]);
     if (fs.existsSync(commandPath)) {
