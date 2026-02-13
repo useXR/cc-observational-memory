@@ -1,3 +1,9 @@
 node_modules/
-.claude/
 nul
+
+# Observational memory — gitignore transient/local state, track committed observations
+.claude/.observer-state.json
+.claude/.tool-events.json
+.claude/.pending-observation
+.claude/observations.local.md
+.claude/settings.local.json
