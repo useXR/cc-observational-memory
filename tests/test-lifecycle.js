@@ -132,6 +132,49 @@ test('injects observations on clear with correct preamble', function () {
     'Expected clear preamble');
 });
 
+test('injects branch-keyed plan when present', function () {
+  // Detect actual branch in the temp dir (or use fallback plan.md)
+  var planContent = '## Plan\n1. [x] Step one\n2. [ ] Step two\n3. [ ] Step three';
+
+  // Test fallback to plan.md (temp dir is not a git repo)
+  fs.writeFileSync(path.join(claudeDir, 'plan.md'), planContent);
+  var r = runHook('session-start.js', { cwd: tmpDir, source: 'startup' });
+  var output = JSON.parse(r.stdout);
+  var ctx = output.hookSpecificOutput.additionalContext;
+  assert(ctx.indexOf('<active-plan') !== -1, 'Expected active-plan tag');
+  assert(ctx.indexOf('Step two') !== -1, 'Expected plan content');
+  assert(ctx.indexOf('Continue from where it left off') !== -1, 'Expected plan preamble');
+  fs.unlinkSync(path.join(claudeDir, 'plan.md'));
+});
+
+test('injects plan from .claude/plans/<branch>.md', function () {
+  // Initialize a git repo in temp dir so branch detection works
+  childProcess.execSync('git init', { cwd: tmpDir, stdio: 'pipe' });
+  childProcess.execSync('git checkout -b test-feature', { cwd: tmpDir, stdio: 'pipe' });
+
+  var plansDir = path.join(claudeDir, 'plans');
+  fs.mkdirSync(plansDir, { recursive: true });
+  var planContent = '## Feature Plan\n1. [x] Setup\n2. [ ] Implement\n3. [ ] Test';
+  fs.writeFileSync(path.join(plansDir, 'test-feature.md'), planContent);
+
+  var r = runHook('session-start.js', { cwd: tmpDir, source: 'startup' });
+  var output = JSON.parse(r.stdout);
+  var ctx = output.hookSpecificOutput.additionalContext;
+  assert(ctx.indexOf('<active-plan branch="test-feature"') !== -1, 'Expected branch in tag');
+  assert(ctx.indexOf('Implement') !== -1, 'Expected plan content');
+
+  // Cleanup
+  fs.rmSync(plansDir, { recursive: true });
+  fs.rmSync(path.join(tmpDir, '.git'), { recursive: true });
+});
+
+test('no plan tag when plan file absent', function () {
+  var r = runHook('session-start.js', { cwd: tmpDir, source: 'startup' });
+  var output = JSON.parse(r.stdout);
+  var ctx = output.hookSpecificOutput.additionalContext;
+  assert(ctx.indexOf('<active-plan') === -1, 'Should not have active-plan tag');
+});
+
 // ==========================================
 console.log('\n=== TEST 3: Stop hook — stop_hook_active guard ===');
 // ==========================================
@@ -241,6 +284,72 @@ test('Stop hook triggers Observer when forceObservation is set (even under thres
   var r = runHook('stop-check.js', { cwd: tmpDir, transcript_path: transcriptPath });
   assert(r.exitCode === 2, 'Expected exit 2 (forced), got ' + r.exitCode);
   assert(r.stderr.indexOf('<observation-request>') !== -1, 'Expected Observer prompt');
+});
+
+// ==========================================
+console.log('\n=== TEST 8b: Context window threshold ===');
+// ==========================================
+
+test('triggers Observer when context window exceeds threshold even with low content tokens', function () {
+  // Create a small transcript with usage data showing 130k/200k context (65%)
+  var lines = [];
+  // A few user/assistant messages (low content tokens)
+  for (var i = 0; i < 5; i++) {
+    lines.push(JSON.stringify({
+      type: i % 2 === 0 ? 'user' : 'assistant',
+      timestamp: new Date().toISOString(),
+      message: { role: i % 2 === 0 ? 'user' : 'assistant', content: [{ type: 'text', text: 'Short message ' + i }] }
+    }));
+  }
+  // Add an assistant entry with high usage (65% of 200k)
+  lines.push(JSON.stringify({
+    type: 'assistant',
+    timestamp: new Date().toISOString(),
+    message: { role: 'assistant', content: [{ type: 'text', text: 'Response' }] },
+    usage: {
+      input_tokens: 50000,
+      cache_creation_input_tokens: 40000,
+      cache_read_input_tokens: 40000,
+      output_tokens: 500
+    }
+  }));
+  fs.writeFileSync(transcriptPath, lines.join('\n'));
+
+  // State: no force, content tokens already tracked (so newTokens is small but > 0)
+  fs.writeFileSync(path.join(claudeDir, '.observer-state.json'),
+    JSON.stringify({ lastLine: 0, lastTokenCount: 0, forceObservation: false }));
+
+  var r = runHook('stop-check.js', { cwd: tmpDir, transcript_path: transcriptPath });
+  assert(r.exitCode === 2, 'Expected exit 2 (context threshold), got ' + r.exitCode);
+  assert(r.stderr.indexOf('<observation-request>') !== -1, 'Expected Observer prompt');
+});
+
+test('does not trigger when context is under threshold', function () {
+  // Same transcript but usage showing only 30% context
+  var lines = [];
+  lines.push(JSON.stringify({
+    type: 'user',
+    timestamp: new Date().toISOString(),
+    message: { role: 'user', content: [{ type: 'text', text: 'Hello' }] }
+  }));
+  lines.push(JSON.stringify({
+    type: 'assistant',
+    timestamp: new Date().toISOString(),
+    message: { role: 'assistant', content: [{ type: 'text', text: 'Hi there' }] },
+    usage: {
+      input_tokens: 20000,
+      cache_creation_input_tokens: 20000,
+      cache_read_input_tokens: 20000,
+      output_tokens: 100
+    }
+  }));
+  fs.writeFileSync(transcriptPath, lines.join('\n'));
+
+  fs.writeFileSync(path.join(claudeDir, '.observer-state.json'),
+    JSON.stringify({ lastLine: 0, lastTokenCount: 0, forceObservation: false }));
+
+  var r = runHook('stop-check.js', { cwd: tmpDir, transcript_path: transcriptPath });
+  assert(r.exitCode === 0, 'Expected exit 0 (under context threshold), got ' + r.exitCode);
 });
 
 // ==========================================

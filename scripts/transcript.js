@@ -120,4 +120,41 @@ function parseTranscript(transcriptPath, startLine) {
   return { entries: entries, totalLines: lineIndex };
 }
 
-module.exports = { measureTranscript: measureTranscript, extractContent: extractContent, parseTranscript: parseTranscript, estimateTokens: estimateTokens };
+/**
+ * Get the latest context window usage from the transcript.
+ * Reads backward to find the most recent assistant entry with usage data.
+ * Returns { contextUsed, contextSize } or null if not available.
+ */
+function getContextUsage(transcriptPath) {
+  var content;
+  try {
+    content = fs.readFileSync(transcriptPath, 'utf8');
+  } catch (e) {
+    return null;
+  }
+
+  var lines = content.split('\n');
+
+  // Read backward to find the most recent usage data
+  for (var i = lines.length - 1; i >= 0; i--) {
+    var trimmed = lines[i].trim();
+    if (!trimmed) continue;
+
+    try {
+      var entry = JSON.parse(trimmed);
+      if (entry.type === 'assistant' && entry.usage) {
+        var usage = entry.usage;
+        var contextUsed = (usage.input_tokens || 0) +
+          (usage.cache_creation_input_tokens || 0) +
+          (usage.cache_read_input_tokens || 0);
+        return { contextUsed: contextUsed };
+      }
+    } catch (e) {
+      // Skip
+    }
+  }
+
+  return null;
+}
+
+module.exports = { measureTranscript: measureTranscript, extractContent: extractContent, parseTranscript: parseTranscript, estimateTokens: estimateTokens, getContextUsage: getContextUsage };

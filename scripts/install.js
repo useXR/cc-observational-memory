@@ -96,15 +96,19 @@ function mergeHooks(existingSettings) {
   return settings;
 }
 
-function installCommand() {
+function installCommands() {
   if (!fs.existsSync(COMMANDS_DIR)) {
     fs.mkdirSync(COMMANDS_DIR, { recursive: true });
   }
 
-  var src = path.join(__dirname, '..', 'commands', 'observe.md');
-  var dest = path.join(COMMANDS_DIR, 'observe.md');
-  fs.copyFileSync(src, dest);
-  console.log('  Installed /observe command');
+  var commands = ['observe.md', 'observe-init.md', 'worktree-init.md', 'worktree-merge.md'];
+  var srcDir = path.join(__dirname, '..', 'commands');
+  for (var i = 0; i < commands.length; i++) {
+    var src = path.join(srcDir, commands[i]);
+    var dest = path.join(COMMANDS_DIR, commands[i]);
+    fs.copyFileSync(src, dest);
+    console.log('  Installed /' + commands[i].replace('.md', '') + ' command');
+  }
 }
 
 function createDefaultConfig() {
@@ -116,6 +120,7 @@ function createDefaultConfig() {
   var defaultConfig = {
     observationThreshold: 30000,
     reflectionThreshold: 40000,
+    contextThresholdPct: 60,
     enabled: true
   };
 
@@ -155,9 +160,9 @@ function main() {
   fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2));
   console.log('Updated ' + SETTINGS_PATH);
 
-  // 5. Install slash command
-  console.log('\nInstalling slash command...');
-  installCommand();
+  // 5. Install slash commands
+  console.log('\nInstalling slash commands...');
+  installCommands();
 
   // 6. Create default config
   console.log('\nCreating configuration...');
@@ -168,7 +173,11 @@ function main() {
   console.log('  - SessionStart: Injects prior observations on startup/resume/compact/clear');
   console.log('  - Stop: Triggers observation extraction when threshold reached');
   console.log('  - PreCompact: Ensures observations before context compaction');
-  console.log('\nSlash command: /observe — manually trigger observation before compact/clear');
+  console.log('\nSlash commands:');
+  console.log('  - /observe: manually trigger observation before compact/clear');
+  console.log('  - /observe-init: bootstrap observations from git history for existing projects');
+  console.log('  - /worktree-init: copy observations into a new worktree');
+  console.log('  - /worktree-merge: merge worktree observations back to main project');
   console.log('\nPer-project opt-out: create .claude/.no-observations in any project');
   console.log('Global config: ' + CONFIG_PATH);
 }

@@ -66,6 +66,7 @@ Global config at `~/.claude/observational-memory/config.json`:
 {
   "observationThreshold": 30000,
   "reflectionThreshold": 40000,
+  "contextThresholdPct": 60,
   "enabled": true
 }
 ```
@@ -74,13 +75,28 @@ Global config at `~/.claude/observational-memory/config.json`:
 |---------|---------|-------------|
 | `observationThreshold` | 30000 | Estimated new tokens before triggering the Observer (~4 chars/token) |
 | `reflectionThreshold` | 40000 | When observations.md exceeds this, the Reflector consolidates |
+| `contextThresholdPct` | 60 | Trigger observation when context window exceeds this % used (even if content threshold not met) |
 | `enabled` | true | Global kill switch |
 
-### Manual Observation (`/observe`)
+### Slash Commands
 
-Type `/observe` in any session to manually trigger an observation cycle. Use this before running `/compact` or `/clear` to capture observations from the full, uncompacted context.
+**`/observe`** — Manually trigger an observation cycle. Use before `/compact` or `/clear` to capture observations from the full, uncompacted context. The automatic PreCompact hook also sets a force-observation flag, but the actual extraction happens *after* compaction. `/observe` lets you capture from the complete context first.
 
-The automatic PreCompact hook also sets a force-observation flag, but the actual extraction happens *after* compaction. `/observe` lets you capture from the complete context first.
+**`/observe-init`** — Bootstrap observations for an existing project by analyzing git commit history and project structure. Run this once in projects that already have development history to give future sessions immediate context about the codebase, stack, architecture, and recent work.
+
+**`/worktree-init`** — Copy the main project's observations into a new worktree. Run after creating a worktree so the branch session starts with full project context.
+
+**`/worktree-merge`** — Merge observations from the current worktree back into the main project's file. Run before finishing a branch or removing a worktree. Deduplicates, consolidates, and cleans up completed branch plans.
+
+### Worktree Workflow
+
+```
+1. Create worktree (git worktree add .worktrees/feature -b feature)
+2. cd .worktrees/feature && run /worktree-init
+3. Work on the feature (observations accumulate in the worktree)
+4. Run /worktree-merge (integrates new observations back to main)
+5. Finish branch (merge PR, remove worktree)
+```
 
 ### Per-Project Opt-Out
 
@@ -130,6 +146,9 @@ cc-observational-memory/
     uninstall.js        # Uninstaller
   commands/
     observe.md          # /observe slash command
+    observe-init.md     # /observe-init slash command
+    worktree-init.md    # /worktree-init slash command
+    worktree-merge.md   # /worktree-merge slash command
   package.json
   README.md
 ```

@@ -31,10 +31,22 @@ async function main() {
 
   var state = config.readState(cwd);
 
-  // --- Phase 1: Check if OBSERVATION is needed (new transcript content) ---
+  // --- Phase 1: Check if OBSERVATION is needed ---
   var measured = transcript.measureTranscript(transcriptPath);
   var newTokens = measured.contentTokens - (state.lastTokenCount || 0);
   var needsObservation = state.forceObservation || newTokens >= cfg.observationThreshold;
+
+  // Also trigger if context window is getting full (even if content threshold not met)
+  if (!needsObservation && cfg.contextThresholdPct) {
+    var usage = transcript.getContextUsage(transcriptPath);
+    if (usage && usage.contextUsed > 0) {
+      var contextSize = 200000; // Claude's context window
+      var pctUsed = (usage.contextUsed / contextSize) * 100;
+      if (pctUsed >= cfg.contextThresholdPct && newTokens > 0) {
+        needsObservation = true;
+      }
+    }
+  }
 
   if (needsObservation) {
     // Update state: record current position, reset force flag

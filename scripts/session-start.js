@@ -1,6 +1,20 @@
 'use strict';
 
 var config = require('./config');
+var childProcess = require('child_process');
+
+function getCurrentBranch(cwd) {
+  try {
+    return childProcess.execSync('git branch --show-current', {
+      cwd: cwd,
+      encoding: 'utf8',
+      timeout: 3000,
+      stdio: ['pipe', 'pipe', 'pipe']
+    }).trim();
+  } catch (e) {
+    return '';
+  }
+}
 
 async function main() {
   var input = await config.readStdin();
@@ -53,13 +67,39 @@ async function main() {
     ].join(' ');
   }
 
-  var context = [
+  var sections = [
     '<prior-observations>',
     preamble,
     '',
     observations,
     '</prior-observations>'
-  ].join('\n');
+  ];
+
+  // Inject active plan if it exists (keyed by branch name)
+  var branch = getCurrentBranch(cwd);
+  var plansDir = path.join(cwd, '.claude', 'plans');
+  var planPath = branch ? path.join(plansDir, branch + '.md') : '';
+
+  // Fall back to plan.md for non-branch contexts
+  if (!planPath || !fs.existsSync(planPath)) {
+    planPath = path.join(cwd, '.claude', 'plan.md');
+  }
+
+  try {
+    var plan = fs.readFileSync(planPath, 'utf8').trim();
+    if (plan) {
+      sections.push('');
+      sections.push('<active-plan branch="' + (branch || 'unknown') + '">');
+      sections.push('The following plan was in progress. Continue from where it left off.');
+      sections.push('');
+      sections.push(plan);
+      sections.push('</active-plan>');
+    }
+  } catch (e) {
+    // No plan file, that's fine
+  }
+
+  var context = sections.join('\n');
 
   var output = {
     hookSpecificOutput: {

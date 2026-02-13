@@ -67,11 +67,14 @@ function removeScripts() {
   console.log('Removed scripts directory: ' + TARGET_DIR);
 }
 
-function removeCommand() {
-  var commandPath = path.join(COMMANDS_DIR, 'observe.md');
-  if (fs.existsSync(commandPath)) {
-    fs.unlinkSync(commandPath);
-    console.log('Removed /observe command');
+function removeCommands() {
+  var commands = ['observe.md', 'observe-init.md', 'worktree-init.md', 'worktree-merge.md'];
+  for (var i = 0; i < commands.length; i++) {
+    var commandPath = path.join(COMMANDS_DIR, commands[i]);
+    if (fs.existsSync(commandPath)) {
+      fs.unlinkSync(commandPath);
+      console.log('Removed /' + commands[i].replace('.md', '') + ' command');
+    }
   }
 }
 
@@ -81,7 +84,7 @@ function main() {
   console.log('Uninstalling Observational Memory...\n');
 
   removeHooks();
-  removeCommand();
+  removeCommands();
 
   if (removeFiles) {
     console.log('');

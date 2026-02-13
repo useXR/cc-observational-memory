@@ -10,6 +10,7 @@ var CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 var DEFAULTS = {
   observationThreshold: 30000,
   reflectionThreshold: 40000,
+  contextThresholdPct: 60,
   enabled: true
 };
 
